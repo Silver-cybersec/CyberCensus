@@ -2,6 +2,19 @@
 
 本项目遵循语义化版本（`主版本.次版本.修订号`）。
 
+## [0.9.1] - 2026-11-25
+
+### 新增
+
+- **Linux x86_64 命令行发行包**：`CyberCensus-linux-x86_64.tar.gz`，内置 Linux 版 subfinder / httpx / nuclei 和官方模板，附 `install.sh`
+- 界面版本号改为读取 `cybercensus.__version__`
+
+### 文档
+
+- README 增加 Linux 下载、安装与运行说明
+- README 末尾新增免责声明
+- CSDN 宣传稿标题带上项目名，并标明作者与 GitHub 仓库
+
 ## [0.9.0] - 2026-11-25
 
 首个公开开源预览版。
