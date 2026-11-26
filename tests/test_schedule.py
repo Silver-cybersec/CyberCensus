@@ -26,6 +26,31 @@ class TestIntervals(unittest.TestCase):
         self.assertEqual(cybercensus.parse_interval("10s", 123), 123)
 
 
+class TestPrune(unittest.TestCase):
+    def test_keeps_newest_and_skips_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            names = []
+            for ts in ("20260101_000000", "20260102_000000", "20260103_000000"):
+                for suffix in (".html", ".csv", "_all.csv", ".json"):
+                    n = "cybercensus_%s%s" % (ts, suffix)
+                    open(os.path.join(d, n), "w").close()
+                    names.append(n)
+            baseline = os.path.join(d, "baseline.json")
+            open(baseline, "w").close()
+
+            removed = cybercensus.prune_reports(d, 2)
+            self.assertEqual(len(removed), 4)
+            left = sorted(os.listdir(d))
+            self.assertIn("baseline.json", left)
+            self.assertFalse(any("20260101" in n for n in left))
+            self.assertTrue(any("20260103" in n for n in left))
+
+    def test_zero_disables(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "cybercensus_20260101_000000.html"), "w").close()
+            self.assertEqual(cybercensus.prune_reports(d, 0), [])
+
+
 class TestTaskFile(unittest.TestCase):
     def test_load_both_shapes(self):
         with tempfile.TemporaryDirectory() as d:

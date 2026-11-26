@@ -6,6 +6,7 @@
         "-n", "某单位",
         "--out", "out/unit",
         "--formats", "html,md,csv,json",
+        "--keep", "30",
         "--webhook", ""
       ],
       "every": "24h",

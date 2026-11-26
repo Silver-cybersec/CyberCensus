@@ -8,7 +8,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D4.svg)](#)
-[![Version](https://img.shields.io/badge/version-0.10.0-22d3ee.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.1-22d3ee.svg)](CHANGELOG.md)
 
 <p align="center"><img src="docs/social-preview.png" alt="CyberCensus - Find every exposed asset. Prove every attribution." width="900"></p>
 
@@ -433,6 +433,7 @@ run.bat -d xx.gov.cn
 | `--tasks FILE` | 定时巡航：按任务文件里的周期自动执行多个目标（常驻） |
 | `--tasks-once` | 定时巡航：只执行本轮到期任务后退出，适合 cron / Windows 计划任务 |
 | `--tasks-status` | 定时巡航：只查看任务、上次/下次运行时间与状态 |
+| `--keep N` | 只保留输出目录里最近 N 轮报告（0=不清理，巡航建议 20~50） |
 | `--full-ports` | 全端口 1-65535（很慢） |
 | `--top N` | 只扫前 N 个常见端口 |
 | `--ports` | 自定义端口，如 `"80,443,8000-8100"`（优先于 `--top`） |
@@ -475,6 +476,7 @@ run.bat -d xx.gov.cn
 - 含 `--active` / `--cscan` / `--scan-asn` 的任务必须显式 `"authorized": true`，
   否则会跳过并记一次失败
 - 每个任务的输出目录独立，自动复用该目录下的 `baseline.json` 做增量对比
+- 建议给任务加 `--keep 30`：每轮结束只保留最近 30 轮报告，基线、任务状态和历史记录不受影响
 - 状态写在 `<tasks.json>.state.json`，执行历史追加到 `<tasks.json>.history.jsonl`
 
 ```bash

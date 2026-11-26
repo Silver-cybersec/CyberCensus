@@ -49,7 +49,7 @@ import gzip
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 
 # ----------------------------------------------------------------------------
 # 可选依赖
@@ -5989,6 +5989,10 @@ class Engine(object):
                          ("docx", "WORD"), ("pdf", "PDF")):
             if k in files:
                 log("%-10s %s" % (label, files[k]), "+")
+        keep = int(getattr(self.args, "keep", 0) or 0)
+        removed = prune_reports(outdir, keep)
+        if removed:
+            log("清理旧报告 %d 个（保留最近 %d 轮）" % (len(removed), keep), "-")
         return files, json_path, md_path
 
     def _report(self, rows, groups, ts, baseline_diff=None):
@@ -7252,6 +7256,8 @@ def build_parser():
     p.add_argument("--scan-timeout", type=float, default=2.5, dest="scan_timeout",
                    help="TCP 端口扫描连接超时秒数（默认2.5；与 --timeout 的 HTTP 超时独立）")
     p.add_argument("--out", default="cybercensus_out", help="输出目录")
+    p.add_argument("--keep", type=int, default=0, metavar="N",
+                   help="只保留最近 N 轮报告（0=不清理；定时巡航建议 20~50）")
     p.add_argument("--formats", default="md,csv,html", dest="output_formats",
                    help="输出哪些格式：md / csv / html / json / txt / docx（word）/ pdf，"
                         "逗号分隔（默认 md,csv,html）")
@@ -7587,6 +7593,41 @@ def _write_json(path, obj):
 
 def _fmt_clock(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "从未"
+
+
+# ---------------------------------------------------------------------------
+# 报告保留策略：定时巡航长期运行时不至于把磁盘写满
+# ---------------------------------------------------------------------------
+
+REPORT_TS_RE = re.compile(r"^cybercensus_(\d{8}_\d{6})")
+REPORT_EXTS = (".html", ".pdf", ".docx", ".txt", ".md", ".csv", ".json")
+
+
+def prune_reports(outdir, keep):
+    """只保留最近 keep 轮报告（按时间戳分组，所有格式一起删）。
+
+    keep <= 0 表示不清理；baseline.json / 任务状态 / 历史记录不受影响。
+    返回被删除的文件名列表。
+    """
+    if keep <= 0 or not os.path.isdir(outdir):
+        return []
+    groups = {}
+    for name in os.listdir(outdir):
+        m = REPORT_TS_RE.match(name)
+        if not m or os.path.splitext(name)[1].lower() not in REPORT_EXTS:
+            continue
+        groups.setdefault(m.group(1), []).append(name)
+    if len(groups) <= keep:
+        return []
+    removed = []
+    for ts in sorted(groups)[:-keep]:
+        for name in groups[ts]:
+            try:
+                os.remove(os.path.join(outdir, name))
+                removed.append(name)
+            except OSError:
+                pass
+    return removed
 
 
 def run_scheduler(args):
