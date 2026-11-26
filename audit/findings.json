@@ -1,0 +1,135 @@
+{
+  "baseline": {
+    "upstream": "https://github.com/Zerdon-me/CyberCensus",
+    "fork": "https://github.com/Silver-cybersec/CyberCensus",
+    "branch": "main",
+    "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+    "commit_time_hkt": "2026-11-26 10:15:02 香港时间",
+    "commit_time_source": "git author date 2026-11-26T10:15:02+08:00；GitHub API 2026-11-26T02:15:02Z 换算为同一香港时间",
+    "audit_query_time_hkt": "2026-11-26 10:24-10:28 香港时间",
+    "method": "只读源码与只读查询。未运行产品代码，未安装依赖，未下载二进制。"
+  },
+  "counts": {"高": 2, "中": 6, "低": 2},
+  "findings": [
+    {
+      "id": "CC-01",
+      "level": "高",
+      "category": "宿主机执行 / 供应链",
+      "path": "tool_updater.py",
+      "line": 34,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/tool_updater.py#L34-L35",
+      "status": "已确认",
+      "description": "增强引擎更新会下载 ProjectDiscovery 的 Windows amd64 zip，解出 exe 后立刻执行。直连失败时自动改走 https://gh-proxy.com/ 与 https://ghproxy.net/（GitHub API 与文件下载都加此前缀）。select_asset 跳过文件名含 checksum 的资产，安装过程没有比对上游校验和或签名。所谓版本校验是 subprocess 执行「-version」并正则提取 x.y.z；能打印版本号的程序即可替换 tools/ 下的 subfinder、httpx、nuclei。随后 update_templates 再执行 nuclei -update-templates。GUI「一键更新」与 CLI --update-engines 都走到这条路径。压缩包成员被写到固定文件名，读到的代码没有按成员路径落盘。结论来自静态阅读，未实际下载或执行。",
+      "recommendation": "只从官方 Release 下载，并在执行前核对 ProjectDiscovery 发布的 checksum。校验失败则删除文件、保留旧二进制。非官方镜像默认关闭；若保留，也必须对同一哈希做校验。nuclei 模板固定到有哈希的修订，而不是跟随浮动的 latest 或 main。"
+    },
+    {
+      "id": "CC-02",
+      "level": "高",
+      "category": "授权边界 / 主动探测默认行为",
+      "path": "asm_gui.pyw",
+      "line": 966,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Silver-cybersec/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/asm_gui.pyw#L966-L969",
+      "status": "已确认",
+      "description": "图形界面启动时默认模式是「标准」，高级参数里「敏感路径探测」开关初始为真，且开始测绘时总是把该值传入流水线。run_pipeline 在 sensitive 为真时即调用 probe_sensitive，不要求 active。授权勾选只在模式名为「主动」时显示并拦截。build_args 同时把 yes 设为真。因此界面默认路径会在锚点 HTTP 探测（以及已安装 httpx 时的存活结果）写上状态码之后，对最多 200 个 Web 资产请求 /.git/config、/.env、/actuator、/actuator/heapdump、Swagger、备份包等（SENSITIVE_PATHS 共 18 条，另加按域名生成的备份名）。命令行的 --sensitive 默认关闭，只有 --active 或显式 --sensitive 才会跑；本条是界面默认值与授权闸门不一致。未实际发请求。",
+      "recommendation": "敏感路径开关默认关闭，并与「主动」模式和书面授权勾选绑在一起。标准模式只保留文档所述的锚点探测。被动模式应同时把 sensitive 置为假。"
+    },
+    {
+      "id": "CC-03",
+      "level": "中",
+      "category": "授权边界 / 范围过滤",
+      "path": "cybercensus.py",
+      "line": 3072,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/cybercensus.py#L3072-L3110",
+      "status": "已确认",
+      "description": "范围过滤在采集、httpx、端口扫描和敏感路径之后才执行（apply_scope 位于 run_pipeline 分级之后）。--only-scope 只删除标成「无关」的资产；「相似」（同一可注册域或清单中的 IP）按帮助文本保留。无协议前缀的条目用 split(\"/\") 取第一段，故 203.0.113.0/24 变成单个地址 203.0.113.0，前缀长度被丢掉。IPv6 字面量会被冒号切开。范围文件读失败只打日志，清单为空时函数直接返回，后续阶段仍已跑完。主台账来自过滤后的 assets；nuclei 命中、web_paths、APP 列表未见按 scope 再滤一遍。CHANGELOG 写「无关项不进入表格和报告」，与主台账一致，与这些旁路栏目不一致。未运行。",
+      "recommendation": "把范围当作发送请求前的允许名单，CIDR 按网段匹配。文件读失败应中止本轮而不是静默继续。--only-scope 同时去掉旁路栏目里的范围外 URL。"
+    },
+    {
+      "id": "CC-04",
+      "level": "中",
+      "category": "传输 / 数据完整",
+      "path": "cybercensus.py",
+      "line": 129,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/cybercensus.py#L129-L131",
+      "status": "已确认",
+      "description": "模块级 SSL 上下文关闭主机名检查与证书校验，http_get 把该上下文用于 crt.sh、RIPEstat、搜索引擎、OTX、urlscan、CertSpotter、Shodan InternetDB、Webhook 等全部 HTTP。tls_cert_info 另建一个同样不校验的上下文，用于读取对端证书，这一点与探测目的相符。send_webhook 也使用同一不校验上下文，完成通知可被中间人读取或篡改。providers.py 的平台 API 默认校验证书，仅当环境变量 ASM_INSECURE 为真时关闭。未做握手实验。",
+      "recommendation": "对第三方情报源和 Webhook 使用默认证书校验。探测目标证书时单独使用不校验上下文，避免一个全局开关覆盖带身份的请求。"
+    },
+    {
+      "id": "CC-05",
+      "level": "中",
+      "category": "凭据存储",
+      "path": "providers.py",
+      "line": 428,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/providers.py#L428-L433",
+      "status": "已确认",
+      "description": "FOFA 将 email 与 key、Hunter 将 api-key、Shodan 将 key 放在查询字符串中。DayDayMap、ZoomEye、Quake、Censys、0.zone 使用请求头或 POST 体。密钥写入本机 config.json（GUI 保存为普通 json.dump，输入框用星号遮挡，文件模式未收紧）。环境变量优先于文件。config.json 已列入 .gitignore。已读路径没有把 key 变量本身 print 出来；debug 只记录翻译后的查询语句。查询串仍会进入对端与代理访问日志。仓库内 config.example.json 的 key 为空，未发现真实密钥。未抄录任何密钥值。",
+      "recommendation": "平台认证放在请求头。config.json 保存为仅当前用户可读。日志与异常字符串去掉 URL 中的 key、email。"
+    },
+    {
+      "id": "CC-06",
+      "level": "中",
+      "category": "供应链 / 发布流水线",
+      "path": ".github/workflows/build.yml",
+      "line": 37,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/.github/workflows/build.yml#L37-L51",
+      "status": "已确认",
+      "description": "打 tag 时 Windows 与 Linux 作业都请求 projectdiscovery/*/releases/latest，下载文件名匹配 windows_amd64.zip 或 linux_amd64.zip 的第一个资产，不核对上游 checksum。nuclei 模板取自 codeload 的 nuclei-templates 分支 main，无修订锁定。pip install 的 customtkinter、dnspython、cryptography、pypinyin、pyinstaller、wafw00f 无版本锁定与哈希。actions/checkout@v4、actions/setup-python@v5、softprops/action-gh-release@v2 使用浮动主版本标签，无 digest。pack_release.py 在复制之后计算 SHA256SUMS，该和是「CI 当时拿到的字节」的自述，不是与上游校验和比对的结果。未运行该工作流，未拉取镜像层（本树无 Docker）。",
+      "recommendation": "发布作业锁定工具与模板的版本和上游校验和，pip 使用哈希锁定，Actions 固定到 commit SHA。对外发布的 SHA256SUMS 附带与上游 checksum 一致的说明。"
+    },
+    {
+      "id": "CC-07",
+      "level": "中",
+      "category": "授权边界 / 定时任务",
+      "path": "cybercensus.py",
+      "line": 7702,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/cybercensus.py#L7702-L7703",
+      "status": "已确认",
+      "description": "定时任务把「需要 authorized: true」限定为参数列表中出现 --active、--cscan 或 --scan-asn。--verify、--sensitive、--probe-found、--update-engines 不在此列。命中主动参数时还会自动追加 --yes，从而跳过交互确认。examples/tasks.example.json 中「已知域名每周复核」使用 --verify 且 authorized 为 false，按当前判断会执行。任务文件是本机信任边界；若该文件被改，可在巡航进程里触发更新器下载执行（见 CC-01）。subprocess 使用参数数组，未使用 shell。未运行调度器。",
+      "recommendation": "把会访问目标的 --verify、--sensitive、--probe-found 以及会下载执行的 --update-engines 纳入同一授权开关。不要在调度器里自动追加 --yes。"
+    },
+    {
+      "id": "CC-08",
+      "level": "中",
+      "category": "供应链 / 启动链",
+      "path": "启动界面.bat",
+      "line": 8,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/启动界面.bat#L8-L13",
+      "status": "已确认",
+      "description": "双击启动脚本在 import customtkinter 失败时执行 py -3.11 -m ensurepip 与 py -3.11 -m pip install customtkinter，无版本、无哈希，然后用 pyw 或 pythonw 启动 asm_gui.pyw。run.bat 无参数时同样启动 GUI。pack_linux.py 生成的 install.sh 对 requirements-cli.txt 做 pip install，该文件只有 dnspython、cryptography、pypinyin 的最低版本。未执行这些脚本。",
+      "recommendation": "启动脚本不要在双击时隐式 pip install。依赖写入带哈希的锁文件，由操作者在单独步骤安装。"
+    },
+    {
+      "id": "CC-09",
+      "level": "低",
+      "category": "数据外传",
+      "path": "cybercensus.py",
+      "line": 3029,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/cybercensus.py#L3029-L3031",
+      "status": "已确认",
+      "description": "目标 IP 以明文 HTTP 发给 http://ip-api.com/json/。Wayback CDX 使用 http://web.archive.org/cdx/search/cdx ，查询里带目标域名。whois 使用 TCP 43 连接 whois.iana.org，并把应答中的 refer 主机作为下一跳。这些是功能所需的出站，不是写死的项目方遥测地址。在已读的 py、pyw、bat、yml 中未发现向维护者自有域名回传扫描结果的端点。Webhook 目标来自用户参数。未抓包。",
+      "recommendation": "情报查询改用提供 HTTPS 的端点。报告中列出将收到目标名称、域名和 IP 的第三方，便于授权范围评估。"
+    },
+    {
+      "id": "CC-10",
+      "level": "低",
+      "category": "本地执行",
+      "path": "cybercensus.py",
+      "line": 6816,
+      "commit_sha": "1192f64ec542244d2e06c12be2bdd93097ef1a4e",
+      "evidence": "https://github.com/Zerdon-me/CyberCensus/blob/1192f64ec542244d2e06c12be2bdd93097ef1a4e/cybercensus.py#L6816-L6835",
+      "status": "已确认",
+      "description": "外部工具查找顺序为程序目录下 tools/、bin/、程序目录、PyInstaller _MEIPASS，最后才是 PATH。Windows 上接受 .exe、.cmd、.bat、.ps1。同名脚本若放在 tools/ 会先于 PATH 被 subprocess 参数数组执行（未开 shell）。这依赖本机目录可写。未投放文件、未执行。",
+      "recommendation": "只接受预期的可执行扩展名，并拒绝从可被其他用户写入的目录加载。"
+    }
+  ]
+}
