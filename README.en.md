@@ -25,6 +25,7 @@ Given a target, CyberCensus discovers publicly exposed assets and classifies the
 - External engines: subfinder / httpx / wafw00f / nuclei (bundled in the full package, updatable)
 - Reports: HTML / PDF / Word / TXT / Markdown / CSV / JSON, plus an interactive asset relationship graph
 - Continuous monitoring (`--watch`), baseline diffing, Webhook alerts
+- Scheduled patrol (`--tasks tasks.json`): multiple targets on `30m / 6h / 1d / 7d` intervals, plus `--tasks-once` for cron / Task Scheduler
 - GUI: asset table with sorting, search, multi-select, bulk reclassification, copy URLs/hosts, export selected CSV
 
 ## Quick start
@@ -47,6 +48,8 @@ python cybercensus.py -d example.com
 python cybercensus.py -n "Example Corporation"
 python cybercensus.py -d example.com --verify
 python cybercensus.py -d example.com --active --top 100   # authorized targets only
+python cybercensus.py --tasks tasks.json                  # scheduled patrol (daemon)
+python cybercensus.py --tasks tasks.json --tasks-once     # run due tasks once (cron)
 ```
 
 Run tests (offline):

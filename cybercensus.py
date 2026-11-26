@@ -30,6 +30,7 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -48,7 +49,7 @@ import gzip
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 # ----------------------------------------------------------------------------
 # 可选依赖
@@ -7237,6 +7238,12 @@ def build_parser():
                    help="扫描目标自有/指定 ASN 的宣告网段（隐含主动，需授权；上限 4096 IP）")
     p.add_argument("--watch", type=int, default=0, metavar="MIN",
                    help="持续监控：每 N 分钟重扫一次并对比基线（Ctrl+C 停止）")
+    p.add_argument("--tasks", default="", metavar="FILE",
+                   help="定时巡航任务文件（JSON）：多个目标按周期自动执行")
+    p.add_argument("--tasks-once", action="store_true",
+                   help="定时巡航：只执行本轮到期任务后退出（配合 cron / 计划任务）")
+    p.add_argument("--tasks-status", action="store_true",
+                   help="定时巡航：只打印任务列表和下次运行时间")
     p.add_argument("--full-ports", action="store_true", help="全端口 1-65535（很慢）")
     p.add_argument("--top", type=int, default=0, help="使用前 N 个常见端口")
     p.add_argument("--ports", default="", help='自定义端口，如 "80,443,8000-8100"')
@@ -7513,6 +7520,216 @@ def run_pipeline(args, names, domains, ips, should_stop=None, do_output=True):
     return eng, files, json_path, md_path
 
 
+# ---------------------------------------------------------------------------
+# 定时巡航（ARL 式多目标任务）
+#
+# tasks.json:
+#   {"tasks": [
+#     {"name": "某单位日常巡航",
+#      "argv": ["-n", "某单位", "--out", "out/unit", "--formats", "html,md,csv,json"],
+#      "every": "24h", "enabled": true, "authorized": false},
+#     {"name": "某域名每周复核",
+#      "args": "-d example.com --verify --out out/example",
+#      "every": "7d"}
+#   ]}
+#
+# 运行状态写在 <tasks.json>.state.json，执行历史追加到 <tasks.json>.history.jsonl。
+# 含 --active / --cscan / --scan-asn 的任务必须显式 "authorized": true 才会执行。
+# ---------------------------------------------------------------------------
+
+def parse_interval(text, default=86400):
+    """把 '30m' / '6h' / '1d' / '7d' 解析成秒；非法值返回 default。"""
+    m = re.fullmatch(r"\s*(\d+)\s*([mhd])\s*", str(text or ""), re.I)
+    if not m:
+        return default
+    return max(1, int(m.group(1))) * {"m": 60, "h": 3600, "d": 86400}[m.group(2).lower()]
+
+
+def load_task_file(path):
+    """读任务文件；兼容 {"tasks":[...]} 和顶层数组两种写法。"""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    items = data.get("tasks") if isinstance(data, dict) else data
+    return [t for t in (items or []) if isinstance(t, dict)]
+
+
+def _task_argv(task):
+    """任务命令行：优先 argv 数组，其次 args 字符串。"""
+    argv = task.get("argv")
+    if isinstance(argv, list):
+        return [str(x) for x in argv]
+    raw = str(task.get("args") or "").strip()
+    return shlex.split(raw) if raw else []
+
+
+def _task_name(task, idx):
+    return str(task.get("name") or "task-%d" % (idx + 1))
+
+
+def _task_is_active(argv):
+    return any(x in ("--active", "--cscan", "--scan-asn") for x in argv)
+
+
+def _read_json(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _write_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def _fmt_clock(ts):
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "从未"
+
+
+def run_scheduler(args):
+    """定时巡航主循环；--tasks-once 只跑到期任务后退出。"""
+    tasks_path = os.path.abspath(args.tasks)
+    if not os.path.isfile(tasks_path):
+        print("[错误] 任务文件不存在：%s" % tasks_path)
+        return 2
+    try:
+        tasks = load_task_file(tasks_path)
+    except Exception as e:
+        print("[错误] 任务文件解析失败：%s" % str(e)[:120])
+        return 2
+    if not tasks:
+        print("[错误] 任务文件里没有 tasks 列表。")
+        return 2
+
+    state_path = tasks_path + ".state.json"
+    history_path = tasks_path + ".history.jsonl"
+    state = _read_json(state_path, {})
+    workdir = os.path.dirname(tasks_path) or "."
+    base_cmd = ([sys.executable] if getattr(sys, "frozen", False)
+                else [sys.executable, os.path.abspath(__file__)])
+
+    def due_at(idx, task):
+        name = _task_name(task, idx)
+        last = float((state.get(name) or {}).get("last_run") or 0)
+        if not last:
+            return 0.0          # 从未运行：立即到期
+        return last + parse_interval(task.get("every"), 86400)
+
+    if getattr(args, "tasks_status", False):
+        print("%-22s %-6s %-16s %-16s %s"
+              % ("任务", "周期", "上次运行", "下次运行", "状态"))
+        for i, task in enumerate(tasks):
+            name = _task_name(task, i)
+            st = state.get(name) or {}
+            last = float(st.get("last_run") or 0)
+            enabled = task.get("enabled", True) is not False
+            argv = _task_argv(task)
+            if not enabled:
+                status = "已停用"
+            elif _task_is_active(argv) and not task.get("authorized"):
+                status = "缺 authorized，不会执行"
+            elif st.get("last_rc") not in (None, 0):
+                status = "上轮失败 rc=%s" % st.get("last_rc")
+            else:
+                status = "正常"
+            nxt = "-" if not enabled else (
+                "待运行" if not last else _fmt_clock(due_at(i, task)))
+            print("%-22s %-6s %-16s %-16s %s"
+                  % (name, str(task.get("every") or "24h"),
+                     _fmt_clock(last), nxt, status))
+        return 0
+
+    once = bool(getattr(args, "tasks_once", False))
+    print("[定时] 已加载 %d 个任务：%s" % (len(tasks), tasks_path))
+    print("[定时] %s" % ("单次模式：执行本轮到期任务后退出"
+                         if once else "常驻模式：Ctrl+C 停止"))
+
+    failures = 0
+    while True:
+        now = time.time()
+        due = []
+        for i, task in enumerate(tasks):
+            if task.get("enabled", True) is False:
+                continue
+            if now >= due_at(i, task):
+                due.append((i, task))
+
+        if not due:
+            if once:
+                print("[定时] 当前没有到期任务。")
+                return 0
+            enabled = [i for i, t in enumerate(tasks)
+                       if t.get("enabled", True) is not False]
+            if not enabled:
+                print("[定时] 没有启用的任务。")
+                return 0
+            upcoming = min(due_at(i, tasks[i]) for i in enabled)
+            wait = max(30, min(3600, int(upcoming - time.time())))
+            print("[定时] 下次任务：%s，%d 分钟后检查"
+                  % (datetime.fromtimestamp(upcoming).strftime("%Y-%m-%d %H:%M"),
+                     max(1, wait // 60)))
+            try:
+                time.sleep(wait)
+            except KeyboardInterrupt:
+                print("\n[定时] 已停止。")
+                return 0
+            continue
+
+        for idx, task in due:
+            name = _task_name(task, idx)
+            argv = _task_argv(task)
+            if not argv:
+                print("[定时] 跳过 %s：没有 argv / args" % name)
+                failures += 1
+                continue
+            active = _task_is_active(argv)
+            if active and not task.get("authorized"):
+                print("[定时] 跳过 %s：含主动扫描参数，但任务未设置 "
+                      '"authorized": true' % name)
+                failures += 1
+                continue
+            cmd = base_cmd + argv
+            if active and "--yes" not in argv:
+                cmd.append("--yes")
+            print("\n[定时] 开始 %s：%s"
+                  % (name, " ".join(argv)))
+            started = time.time()
+            try:
+                rc = subprocess.run(cmd, cwd=workdir).returncode
+            except KeyboardInterrupt:
+                print("\n[定时] 已中断当前任务。")
+                return 1
+            except Exception as e:
+                print("[定时] %s 启动失败：%s" % (name, str(e)[:120]))
+                rc = -1
+            secs = time.time() - started
+            state[name] = {
+                "last_run": time.time(),
+                "last_rc": rc,
+                "last_secs": round(secs, 1),
+                "last_start": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            _write_json(state_path, state)
+            try:
+                with open(history_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "ts": state[name]["last_start"], "name": name,
+                        "rc": rc, "secs": round(secs, 1), "argv": argv,
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+            if rc != 0:
+                failures += 1
+            print("[定时] %s 结束：%s（%.1fs）"
+                  % (name, "成功" if rc == 0 else "失败 rc=%d" % rc, secs))
+
+        if once:
+            return 0 if failures == 0 else 1
+
+
 def main():
     global QUIET
     # 必须在 parse_args 之前设置：Windows CI/控制台是 cp1252 时，
@@ -7547,6 +7764,13 @@ def main():
                     base, log=lambda m: print("  " + str(m))):
                 print("  [%s] %s: %s" % ("OK" if ok else "FAIL", name, msg))
         return 0
+
+    # 定时巡航是独立动作，不需要 -n/-d/--ip
+    if getattr(args, "tasks", "") or getattr(args, "tasks_status", False):
+        if not getattr(args, "tasks", ""):
+            print("[错误] --tasks-status 需要同时指定 --tasks FILE")
+            return 2
+        return run_scheduler(args)
 
     names = list(args.name)
     domains = set(d.strip().lower() for d in args.domain if d.strip())

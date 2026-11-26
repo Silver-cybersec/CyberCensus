@@ -2,6 +2,19 @@
 
 本项目遵循语义化版本（`主版本.次版本.修订号`）。
 
+## [0.10.0] - 2026-11-26
+
+### 新增
+
+- **定时巡航（ARL 式多目标任务）**：`--tasks tasks.json` 按 `30m / 6h / 1d / 7d` 周期自动巡检多个目标
+  - `--tasks-once` 只跑本轮到期任务，方便接 cron / Windows 计划任务
+  - `--tasks-status` 查看上次/下次运行时间与任务状态
+  - 每个任务独立输出目录，自动复用 `baseline.json` 做增量对比和 Webhook 告警
+  - 任务状态写入 `<tasks.json>.state.json`，执行历史追加到 `<tasks.json>.history.jsonl`
+  - 含主动扫描参数的任务必须显式 `"authorized": true`，否则跳过
+- 新增 `examples/tasks.example.json` 示例任务文件
+- 新增 `tests/test_schedule.py`（周期解析、任务加载、参数拆分、主动参数识别）
+
 ## [0.9.1] - 2026-11-25
 
 ### 新增

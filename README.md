@@ -8,7 +8,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D4.svg)](#)
-[![Version](https://img.shields.io/badge/version-0.9.1-22d3ee.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.0-22d3ee.svg)](CHANGELOG.md)
 
 <p align="center"><img src="docs/social-preview.png" alt="CyberCensus - Find every exposed asset. Prove every attribution." width="900"></p>
 
@@ -178,6 +178,7 @@ pyinstaller --onefile --windowed --collect-all customtkinter --collect-all pypin
 | 平台图标/统计查询 | `icon_hash=`（favicon）、`body=`（GA/GTM/Meta 统计 ID），有 Key 时找同主体站点 | 自动（检测到锚点 favicon/统计 ID） |
 | 被动归属扩展 | 统计/像素 ID、Google/Bing/Facebook 验证令牌、证书 SAN 兄弟域、MX/SPF 域名反查 | 标准/复核模式自动；纯被动跳过 |
 | 持续监控 | 每 N 分钟重扫 + 基线对比 + Webhook 告警 | `--watch MIN`；界面「高级参数 → 持续监控」 |
+| 定时巡航 | 多目标任务按 `30m / 6h / 1d / 7d` 周期自动巡检，支持单次模式接 cron | `--tasks tasks.json`（见「定时巡航」） |
 | 资产关系图谱 | 主机→IP→ASN、证书 O=、RDAP、统计 ID、验证令牌的关系链 | 自动（JSON `asset_graph` + HTML 交互图） |
 
 ### 4. 主动探测（需书面授权）
@@ -429,6 +430,9 @@ run.bat -d xx.gov.cn
 | `--asn AS123` | 只列出该 ASN 的宣告网段作为报告线索 |
 | `--scan-asn` | 扫描目标自有/指定 ASN 的网段（隐含 `--active`，需授权，上限 4096 IP） |
 | `--watch MIN` | 持续监控：每 N 分钟自动重扫并对比基线 |
+| `--tasks FILE` | 定时巡航：按任务文件里的周期自动执行多个目标（常驻） |
+| `--tasks-once` | 定时巡航：只执行本轮到期任务后退出，适合 cron / Windows 计划任务 |
+| `--tasks-status` | 定时巡航：只查看任务、上次/下次运行时间与状态 |
 | `--full-ports` | 全端口 1-65535（很慢） |
 | `--top N` | 只扫前 N 个常见端口 |
 | `--ports` | 自定义端口，如 `"80,443,8000-8100"`（优先于 `--top`） |
@@ -440,6 +444,55 @@ run.bat -d xx.gov.cn
 | `--no-sensitive` | 强制关闭敏感路径探测 |
 | `--sensitive-limit` | 敏感探测最多覆盖多少个 Web 资产，默认 200 |
 | `--probe-interval` | 主动 HTTP 探测全局请求间隔秒数（默认 0；建议 0.1~0.5） |
+
+### 定时巡航（ARL 式多目标任务）
+
+把所有需要定期复查的目标写进一个 `tasks.json`，CyberCensus 会按每个任务的周期自动执行、
+落盘报告、和上一轮基线对比并触发 Webhook。示例见 `examples/tasks.example.json`：
+
+```json
+{
+  "tasks": [
+    {
+      "name": "某单位日常巡航",
+      "argv": ["-n", "某单位", "--out", "out/unit",
+               "--formats", "html,md,csv,json"],
+      "every": "24h",
+      "enabled": true
+    },
+    {
+      "name": "某域名每周复核",
+      "args": "-d example.com --verify --out out/example",
+      "every": "7d"
+    }
+  ]
+}
+```
+
+- `every`：`30m` / `6h` / `1d` / `7d`
+- `enabled: false`：暂停该任务
+- `argv` 推荐用数组；也可以写 `args` 字符串（按 shell 规则拆分）
+- 含 `--active` / `--cscan` / `--scan-asn` 的任务必须显式 `"authorized": true`，
+  否则会跳过并记一次失败
+- 每个任务的输出目录独立，自动复用该目录下的 `baseline.json` 做增量对比
+- 状态写在 `<tasks.json>.state.json`，执行历史追加到 `<tasks.json>.history.jsonl`
+
+```bash
+# 常驻：到期就执行，Ctrl+C 停止
+python cybercensus.py --tasks tasks.json
+
+# 只跑本轮到期任务（配合 cron / Windows 计划任务）
+python cybercensus.py --tasks tasks.json --tasks-once
+
+# 查看任务与下次运行时间
+python cybercensus.py --tasks tasks.json --tasks-status
+```
+
+Linux cron 示例（每天 02:30 检查一次）：
+
+```cron
+30 2 * * * cd /opt/cybercensus && ./cybercensus --tasks tasks.json --tasks-once >> cruise.log 2>&1
+```
 
 ### 增强引擎（本机安装的独立工具）
 

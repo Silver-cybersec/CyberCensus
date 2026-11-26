@@ -1,0 +1,34 @@
+{
+  "tasks": [
+    {
+      "name": "单位名称日常巡航",
+      "argv": [
+        "-n", "某单位",
+        "--out", "out/unit",
+        "--formats", "html,md,csv,json",
+        "--webhook", ""
+      ],
+      "every": "24h",
+      "enabled": true,
+      "authorized": false
+    },
+    {
+      "name": "已知域名每周复核",
+      "args": "-d example.com --verify --out out/example --formats html,csv,json",
+      "every": "7d",
+      "enabled": true,
+      "authorized": false
+    },
+    {
+      "name": "授权范围内的主动巡检",
+      "argv": [
+        "-d", "example.com",
+        "--active", "--top", "100",
+        "--out", "out/active"
+      ],
+      "every": "7d",
+      "enabled": false,
+      "authorized": false
+    }
+  ]
+}
