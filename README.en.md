@@ -26,6 +26,7 @@ Given a target, CyberCensus discovers publicly exposed assets and classifies the
 - Reports: HTML / PDF / Word / TXT / Markdown / CSV / JSON, plus an interactive asset relationship graph
 - Continuous monitoring (`--watch`), baseline diffing, Webhook alerts
 - Scheduled patrol (`--tasks tasks.json`): multiple targets on `30m / 6h / 1d / 7d` intervals, plus `--tasks-once` for cron / Task Scheduler
+- Scope filter (`--scope` / `--scope-file`): classify assets against your own URL list as in-scope / similar / unrelated; `--only-scope` drops the rest
 - GUI: asset table with sorting, search, multi-select, bulk reclassification, copy URLs/hosts, export selected CSV
 
 ## Quick start

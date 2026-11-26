@@ -8,7 +8,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D4.svg)](#)
-[![Version](https://img.shields.io/badge/version-0.10.1-22d3ee.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.11.0-22d3ee.svg)](CHANGELOG.md)
 
 <p align="center"><img src="docs/social-preview.png" alt="CyberCensus - Find every exposed asset. Prove every attribution." width="900"></p>
 
@@ -179,6 +179,7 @@ pyinstaller --onefile --windowed --collect-all customtkinter --collect-all pypin
 | 被动归属扩展 | 统计/像素 ID、Google/Bing/Facebook 验证令牌、证书 SAN 兄弟域、MX/SPF 域名反查 | 标准/复核模式自动；纯被动跳过 |
 | 持续监控 | 每 N 分钟重扫 + 基线对比 + Webhook 告警 | `--watch MIN`；界面「高级参数 → 持续监控」 |
 | 定时巡航 | 多目标任务按 `30m / 6h / 1d / 7d` 周期自动巡检，支持单次模式接 cron | `--tasks tasks.json`（见「定时巡航」） |
+| 范围过滤 | 按用户提供的 URL/域名/IP 清单，把资产标为 范围内/相似/无关，可只保留相关项 | `--scope` / `--scope-file` / `--only-scope`；界面「高级参数 → 资产范围文件」 |
 | 资产关系图谱 | 主机→IP→ASN、证书 O=、RDAP、统计 ID、验证令牌的关系链 | 自动（JSON `asset_graph` + HTML 交互图） |
 
 ### 4. 主动探测（需书面授权）
@@ -434,6 +435,9 @@ run.bat -d xx.gov.cn
 | `--tasks-once` | 定时巡航：只执行本轮到期任务后退出，适合 cron / Windows 计划任务 |
 | `--tasks-status` | 定时巡航：只查看任务、上次/下次运行时间与状态 |
 | `--keep N` | 只保留输出目录里最近 N 轮报告（0=不清理，巡航建议 20~50） |
+| `--scope URL` | 资产范围清单（URL/域名/IP，可多次）：结果标注 范围内/相似/无关 |
+| `--scope-file FILE` | 从文件读取资产范围（每行一个 URL/域名/IP） |
+| `--only-scope` | 只保留范围内/相似资产，过滤无关资产 |
 | `--full-ports` | 全端口 1-65535（很慢） |
 | `--top N` | 只扫前 N 个常见端口 |
 | `--ports` | 自定义端口，如 `"80,443,8000-8100"`（优先于 `--top`） |
@@ -495,6 +499,36 @@ Linux cron 示例（每天 02:30 检查一次）：
 ```cron
 30 2 * * * cd /opt/cybercensus && ./cybercensus --tasks tasks.json --tasks-once >> cruise.log 2>&1
 ```
+
+### 资产范围过滤（按 URL 清单筛相似/无关资产）
+
+如果你手里已经有一批 URL（客户给的范围清单、SRC 项目资产表、上一轮台账），
+可以直接交给 CyberCensus 做范围比对：每个资产会标注 **范围内 / 相似 / 无关**。
+
+```bash
+# 命令行：多个 URL/域名/IP
+python cybercensus.py -n "某单位" \
+  --scope https://www.example.com --scope api.example.com --scope 203.0.113.9
+
+# 从文件读：每行一个 URL/域名/IP，# 开头忽略
+python cybercensus.py -n "某单位" --scope-file scope.txt
+
+# 只保留范围内/相似资产（无关项不进入表格和报告）
+python cybercensus.py -n "某单位" --scope-file scope.txt --only-scope
+```
+
+判定规则：
+
+| 标注 | 含义 |
+|------|------|
+| **范围内** | 资产主机与清单中的域名相同，或是其子域 |
+| **相似** | 与清单主机同属一个可注册域（如清单是 `www.example.com`，`api.example.com` 也算），或 IP 命中清单 |
+| **无关** | 既不属同一域，也没有 IP 关联 |
+
+标注会写进 CSV 的 `scope` 列、JSON 的 `asset.scope`，以及 MD/HTML 报告的「范围」列；
+`--only-scope` 会在分级完成后直接剔除无关项，表格和报告只留相关资产。
+
+图形界面在 **高级参数 → 资产范围文件** 选择文件，勾选 **只看范围内/相似资产** 即可。
 
 ### 增强引擎（本机安装的独立工具）
 

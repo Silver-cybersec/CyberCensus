@@ -49,7 +49,7 @@ import gzip
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-__version__ = "0.10.1"
+__version__ = "0.11.0"
 
 # ----------------------------------------------------------------------------
 # 可选依赖
@@ -3050,6 +3050,78 @@ def bgp_prefixes(ip, timeout=15):
 
 
 # ----------------------------------------------------------------------------
+# 资产范围过滤：用户提供 URL/域名/IP 清单，把结果分成 范围内 / 相似 / 无关
+# ----------------------------------------------------------------------------
+MULTI_SUFFIXES = {
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+    "co.uk", "org.uk", "com.hk", "com.tw", "co.jp", "com.sg",
+}
+
+
+def registrable_domain(host):
+    """粗略的可注册域：a.b.example.com.cn -> example.com.cn。"""
+    host = (host or "").strip().lower().rstrip(".")
+    parts = [p for p in host.split(".") if p]
+    if len(parts) <= 2:
+        return host
+    if ".".join(parts[-2:]) in MULTI_SUFFIXES:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def parse_scope_items(items):
+    """把 URL / 域名 / IP 列表解析成 {hosts, domains, ips, registrables}。"""
+    hosts, domains, ips = set(), set(), set()
+    for raw in items or []:
+        s = str(raw or "").strip()
+        if not s or s.startswith("#"):
+            continue
+        if "://" in s:
+            host = urllib.parse.urlparse(s).hostname or ""
+        else:
+            host = s.split("/")[0].split(":")[0]
+        host = host.strip().lower().rstrip(".")
+        if not host:
+            continue
+        try:
+            ipaddress.ip_address(host)
+            ips.add(host)
+            continue
+        except ValueError:
+            pass
+        hosts.add(host)
+        domains.add(host)
+    return {"hosts": hosts, "domains": domains, "ips": ips,
+            "registrables": {registrable_domain(h) for h in hosts}}
+
+
+def classify_scope(host, ip, scope):
+    """范围内 = 与清单同域或子域；相似 = 同一可注册域 / 同 IP；其余无关。"""
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+        return ""
+    if host in scope["hosts"] or any(
+            host == d or host.endswith("." + d) for d in scope["domains"]):
+        return "范围内"
+    if registrable_domain(host) in scope["registrables"]:
+        return "相似"
+    if ip and ip in scope["ips"]:
+        return "相似"
+    return "无关"
+
+
+def load_scope_file(path):
+    """读范围文件：每行一个 URL / 域名 / IP，# 开头忽略。"""
+    items = []
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                items.append(line)
+    return items
+
+
+# ----------------------------------------------------------------------------
 # 资产对象
 # ----------------------------------------------------------------------------
 class Asset(object):
@@ -3061,7 +3133,7 @@ class Asset(object):
                  "emails", "phones", "authorities", "refs",
                  "site_code", "police_beian", "rdap_org", "rdap_country",
                  "trackings", "registry_ids", "asn", "asn_org",
-                 "verify_tokens")
+                 "verify_tokens", "scope")
 
     def __init__(self, host, port=None, scheme=None):
         self.host = host
@@ -3104,6 +3176,7 @@ class Asset(object):
         self.asn = ""             # 所属 ASN（Team Cymru）
         self.asn_org = ""         # AS 注册名称（与主体名吻合时作证据）
         self.verify_tokens = set()  # 页面/DNS 中的域名验证令牌
+        self.scope = ""           # 范围过滤：范围内 / 相似 / 无关（未启用时为空）
 
     def key(self):
         p = self.port or (443 if self.scheme == "https" else 80 if self.scheme == "http" else "")
@@ -4910,6 +4983,33 @@ class Engine(object):
                 a.reject_reason = "第三方云/CDN资源，且无强关联证据"
             a.evidence = ev
 
+    # ---- 4.4 资产范围过滤（用户提供的 URL/域名/IP 清单） ----
+    def apply_scope(self):
+        """按 --scope / --scope-file 标注范围内、相似、无关；可选过滤无关项。"""
+        items = list(getattr(self.args, "scope", None) or [])
+        scope_file = str(getattr(self.args, "scope_file", "") or "").strip()
+        if scope_file:
+            try:
+                items.extend(load_scope_file(scope_file))
+            except Exception as e:
+                log("范围文件读取失败: %s" % str(e)[:120], "!")
+        scope = parse_scope_items(items)
+        if not scope["hosts"] and not scope["ips"]:
+            return
+        counts = {"范围内": 0, "相似": 0, "无关": 0}
+        for a in self.assets.values():
+            a.scope = classify_scope(a.host, a.ip, scope)
+            if a.scope:
+                counts[a.scope] += 1
+        log("== 范围过滤：范围内 %d / 相似 %d / 无关 %d =="
+            % (counts["范围内"], counts["相似"], counts["无关"]), "#")
+        if getattr(self.args, "only_scope", False):
+            drop = [k for k, a in self.assets.items() if a.scope == "无关"]
+            for k in drop:
+                del self.assets[k]
+            if drop:
+                log("已过滤无关资产 %d 个" % len(drop), "-")
+
     # ---- 4.5 增量监控（基线对比 + 新资产告警） ----
     BASELINE_NAME = "baseline.json"
 
@@ -5852,7 +5952,7 @@ class Engine(object):
         for a in rows:
             groups.get(a.confidence, groups["存疑"]).append(a)
 
-        cols = ["confidence", "host", "ip", "port", "scheme", "status", "title",
+        cols = ["confidence", "scope", "host", "ip", "port", "scheme", "status", "title",
                 "server", "tech", "cert_org", "cert_san", "beian", "analytics",
                 "favicon", "providers", "prov_kinds", "prov_beian", "prov_cert",
                 "prov_org", "source", "evidence", "reject_reason", "urls",
@@ -5866,7 +5966,7 @@ class Engine(object):
                 w.writerow(cols)
                 for a in items:
                     w.writerow([
-                        a.confidence, a.host, a.ip, a.port or "", a.scheme or "",
+                        a.confidence, a.scope, a.host, a.ip, a.port or "", a.scheme or "",
                         a.status, a.title, a.server, a.tech, a.cert_org, a.cert_san,
                         a.beian, a.analytics, a.favicon,
                         ";".join(sorted(a.providers)),
@@ -6053,6 +6153,23 @@ class Engine(object):
                         "、".join(self.intel.get("queries") or []) or "—",
                         "、".join(self.intel.get("seed_domains") or []) or "—"))
         L.append("")
+
+        # 用户提供的资产范围清单（--scope / --scope-file）
+        scoped = [a for a in rows if getattr(a, "scope", "")]
+        if scoped:
+            sc = {"范围内": 0, "相似": 0, "无关": 0}
+            for a in scoped:
+                sc[a.scope] = sc.get(a.scope, 0) + 1
+            L.append("## 资产范围匹配\n")
+            L.append("按你提供的 URL/域名/IP 清单比对：范围内（同域或子域）%d，"
+                     "相似（同一可注册域/同 IP）%d，无关 %d。"
+                     % (sc["范围内"], sc["相似"], sc["无关"]))
+            L.append("")
+            L.append("| 范围 | 数量 |")
+            L.append("|------|------|")
+            for k in ("范围内", "相似", "无关"):
+                L.append("| %s | %d |" % (k, sc[k]))
+            L.append("")
 
         # 资产关系图谱（文本摘要；HTML 报告里是可交互画布）
         glines = self._graph_lines(limit=50)
@@ -6280,18 +6397,19 @@ class Engine(object):
             if not items:
                 L.append("_无_\n")
                 return
-            head = ("| 主机 | IP | 端口 | 标题 | 服务器 | 平台 | 归属说明（为什么算它的） | 证据 |")
-            sep = ("|------|----|------|------|--------|------|--------------------------|------|")
+            head = ("| 主机 | IP | 端口 | 标题 | 服务器 | 平台 | 范围 | 归属说明（为什么算它的） | 证据 |")
+            sep = ("|------|----|------|------|--------|------|------|--------------------------|------|")
             if show_reason:
                 head += " 剔除原因 |"
                 sep += "----------|"
             L.append(head)
             L.append(sep)
             for a in items:
-                line = "| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                line = "| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
                     _md(a.host), _md(a.ip), _md(str(a.port or "")),
                     _md(a.title), _md(a.server),
                     _md(",".join(sorted(a.providers)) or "-"),
+                    _md(getattr(a, "scope", "") or "-"),
                     _md(plain_evidence(a.evidence)),
                     _md("; ".join(a.evidence)))
                 if show_reason:
@@ -6400,18 +6518,20 @@ class Engine(object):
             if not items:
                 return "<p class='muted'>无</p>"
             head = ("<tr><th>分类</th><th>主机</th><th>IP</th><th>端口</th>"
-                    "<th>标题</th><th>服务器</th><th>指纹</th><th>敏感发现</th>"
+                    "<th>标题</th><th>服务器</th><th>指纹</th><th>范围</th><th>敏感发现</th>"
                     "<th>归属说明</th>" + ("<th>剔除原因</th>" if show_reason else "")
                     + "</tr>")
             body = []
             for a in items:
                 cls = {"确认": "ok", "疑似": "warn", "存疑": "muted2"}.get(a.confidence, "")
                 cells = (
-                    "<td class='%s'>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                    "<td class='%s'>%s</td>"
+                    "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
                     "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
                     % (cls, esc(a.confidence), esc(a.host or ""), esc(a.ip or ""),
                        esc(str(a.port or "")), esc(a.title or ""), esc(a.server or ""),
                        esc((a.tech or "")[:40]),
+                       esc(getattr(a, "scope", "") or "-"),
                        esc("、".join(f.split("|", 1)[-1] for f in sorted(a.findings))),
                        esc(plain_evidence(a.evidence))))
                 if show_reason:
@@ -7233,6 +7353,12 @@ def build_parser():
     p.add_argument("-n", "--name", action="append", default=[], help="单位名称（可多次）")
     p.add_argument("-d", "--domain", action="append", default=[], help="域名（可多次）")
     p.add_argument("--ip", action="append", default=[], help="IP（可多次）")
+    p.add_argument("--scope", action="append", default=[], metavar="URL",
+                   help="资产范围：URL/域名/IP（可多次），结果标注为 范围内/相似/无关")
+    p.add_argument("--scope-file", default="",
+                   help="资产范围文件：每行一个 URL/域名/IP（# 开头忽略）")
+    p.add_argument("--only-scope", action="store_true",
+                   help="只保留范围内/相似资产，过滤无关资产")
     p.add_argument("--beian", default="", help="已知备案号（作为强锚点，可选）")
     p.add_argument("--active", action="store_true", help="启用主动扫描（端口/批量探测），需授权")
     p.add_argument("--cscan", action="store_true", help="扩展扫描 C 段（隐含主动）")
@@ -7502,6 +7628,7 @@ def run_pipeline(args, names, domains, ips, should_stop=None, do_output=True):
     progress(96, "证据分级")
     eng._merge_placeholders()
     eng.evaluate()
+    eng.apply_scope()
     progress(98, "增量对比")
     # 增量监控：与输出目录中的上一轮基线对比（新资产/新端口/新敏感发现告警）
     baseline_diff = eng.diff_baseline()

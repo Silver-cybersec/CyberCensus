@@ -160,7 +160,8 @@ def build_args(mode, platforms, threads=20, provider_pages=1,
                out="cybercensus_out", config=CONFIG_PATH, debug_provider=False,
                formats=None, sensitive=None, probe_interval=0.0, webhook="",
                ext=True, packages=None, intel="", fast=False, paths=True,
-               provider_keyword=False, asn="", scan_asn=False, watch=0):
+               provider_keyword=False, asn="", scan_asn=False, watch=0,
+               scope_file="", only_scope=False):
     """由界面选择构造 argparse.Namespace（与 CLI 参数一一对应）。
 
     mode: passive / standard / verify / active
@@ -215,6 +216,9 @@ def build_args(mode, platforms, threads=20, provider_pages=1,
         asn=[x.strip() for x in re.split(r"[,;\s]+", asn or "") if x.strip()],
         scan_asn=bool(scan_asn),
         watch=max(0, int(watch or 0)),
+        scope=[],
+        scope_file=scope_file or "",
+        only_scope=bool(only_scope),
         yes=True,   # 授权确认由界面勾选框承担，不再走 input()
     )
     # 端口列表（与 CLI main 相同的优先级：自定义 > top > 内置全表）
@@ -1033,6 +1037,21 @@ class App(ctk.CTk):
                      font=self.f_mono_sm, text_color=GRAY
                      ).grid(row=11, column=2, columnspan=4, sticky="w", padx=(0, 10))
 
+        ctk.CTkLabel(f, text="资产范围文件").grid(row=12, column=0, sticky="e",
+                                                  padx=(14, 4), pady=6)
+        self.var_scope_file = ctk.StringVar(value="")
+        ctk.CTkEntry(f, textvariable=self.var_scope_file,
+                     placeholder_text="每行一个 URL/域名/IP，结果标注为 范围内/相似/无关"
+                     ).grid(row=12, column=1, columnspan=4, sticky="we", padx=(0, 4))
+        ctk.CTkButton(f, text="文件…", width=64, command=self._pick_scope_file
+                      ).grid(row=12, column=5, sticky="w", padx=(6, 14))
+
+        self.var_only_scope = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(f, text="只看范围内/相似资产（过滤无关项）",
+                      variable=self.var_only_scope, progress_color=ACCENT
+                      ).grid(row=13, column=0, columnspan=6, sticky="w",
+                             padx=(14, 0), pady=(0, 6))
+
         ctk.CTkLabel(win, text="提示：平台翻页越多越慢、越费配额；全端口扫描建议仅在授权窗口期使用。",
                      font=self.f_mono_sm, text_color=GRAY
                      ).pack(anchor="w", padx=22, pady=(2, 0))
@@ -1597,6 +1616,13 @@ class App(ctk.CTk):
             cur = self.var_packages.get().strip()
             self.var_packages.set((cur + ";" if cur else "") + d)
 
+    def _pick_scope_file(self):
+        p = filedialog.askopenfilename(
+            title="选择资产范围文件（每行一个 URL/域名/IP）",
+            filetypes=[("文本文件", "*.txt *.csv *.list"), ("所有文件", "*.*")])
+        if p:
+            self.var_scope_file.set(p)
+
     def _pick_intel(self):
         p = filedialog.askopenfilename(
             title="选择外部模型/子 agent 产出的理解结果 JSON",
@@ -1723,6 +1749,8 @@ class App(ctk.CTk):
             asn=self.var_asn.get().strip(),
             scan_asn=self.var_scan_asn.get(),
             watch=_to_int(self.var_watch.get(), 0),
+            scope_file=self.var_scope_file.get().strip(),
+            only_scope=self.var_only_scope.get(),
         )
         self._last_out_dir = args.out
         self._last_watch = max(0, int(getattr(args, "watch", 0) or 0))
